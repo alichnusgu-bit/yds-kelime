@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>YDS Kelime Antrenörü</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="theme-color" content="#161c26">
+<style>
+:root{
+  --ink:#161c26; --paper:#f4efe1; --paper-dim:#e7dfc9; --line:#3a4557;
+  --gold:#c9a227; --good:#3f7d53; --bad:#a5342f; --sub:#7c8496;
+  box-sizing:border-box;
+}
+*{box-sizing:inherit}
+html,body{height:100%;margin:0}
+body{
+  background:var(--ink); color:var(--paper);
+  font-family:Georgia,'Iowan Old Style','Times New Roman',serif;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+  min-height:100%;
+}
+.ui{font-family:-apple-system,'Segoe UI',Roboto,sans-serif}
+#app{max-width:640px;margin:0 auto;padding:28px 20px 60px}
+h1{font-size:22px;font-weight:600;letter-spacing:.01em;margin:0 0 4px}
+.sub{color:var(--sub);font-size:14px;margin:0 0 24px}
+nav{display:flex;gap:0;border-bottom:1px solid var(--line);margin-bottom:24px}
+nav button{
+  background:none;border:none;color:var(--sub);font:600 14px/1 -apple-system,sans-serif;
+  padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;
+}
+nav button.active{color:var(--paper);border-bottom-color:var(--gold)}
+label{display:block;font:600 12px/1 -apple-system,sans-serif;color:var(--sub);margin:14px 0 5px}
+input,select,textarea{
+  width:100%;background:var(--paper);color:var(--ink);border:1px solid var(--line);
+  border-radius:3px;padding:9px 10px;font:15px Georgia,serif;
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--gold);outline-offset:1px}
+textarea{resize:vertical;min-height:52px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+button.primary{
+  background:var(--gold);color:#1b1508;border:none;border-radius:3px;
+  font:700 15px -apple-system,sans-serif;padding:12px 18px;cursor:pointer;margin-top:18px;
+}
+button.primary:hover{filter:brightness(1.08)}
+button.ghost{
+  background:none;border:1px solid var(--line);color:var(--paper);border-radius:3px;
+  font:600 13px -apple-system,sans-serif;padding:8px 14px;cursor:pointer;
+}
+.card{background:#1e2636;border:1px solid var(--line);border-radius:5px;padding:20px}
+.stats{display:flex;gap:22px;margin-bottom:20px;font-family:-apple-system,sans-serif}
+.stat b{display:block;font-size:20px;color:var(--gold);font-family:Georgia,serif}
+.stat span{font-size:11px;color:var(--sub)}
+.word-stage{text-align:center;padding:36px 10px}
+.word-stage .en{font-size:38px;font-weight:700;letter-spacing:.01em;margin-bottom:6px}
+.word-stage .meta{color:var(--sub);font-size:13px;font-family:-apple-system,sans-serif;margin-bottom:26px}
+.ans-row{display:flex;gap:10px;max-width:360px;margin:0 auto}
+.ans-row input{text-align:center;font-size:17px}
+.result{padding:24px 6px}
+.result .verdict{font:700 20px -apple-system,sans-serif;margin-bottom:14px}
+.verdict.ok{color:var(--good)} .verdict.no{color:var(--bad)}
+.result .correct-ans{font-size:16px;margin-bottom:14px}
+.info h3{font-size:26px;margin:0 0 2px}
+.info .tr{color:var(--gold);font-size:16px;margin-bottom:14px}
+.info .rowlbl{font:600 12px -apple-system,sans-serif;color:var(--sub);margin:10px 0 3px}
+.example{font-style:italic;color:#d8d2c0}
+.empty{color:var(--sub);font-family:-apple-system,sans-serif;text-align:center;padding:40px 10px}
+table{width:100%;border-collapse:collapse;font-family:-apple-system,sans-serif;font-size:13px}
+td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}
+th{color:var(--sub);font-weight:600}
+@media (max-width:420px){.word-stage .en{font-size:30px}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+const LS_KEY='yds_words_v1', LS_STATE='yds_state_v1', LS_CFG='yds_cfg_v1';
+let words = [], progress = {}, cfg = {newPerSession:10}, seenCounter = 0;
+let tab='study', session=null, ready=false, cloud=false, wordsCol=null, stateDoc=null;
+
+function load(k,d){try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}}
+function save(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}}
+function saveAll(){
+  if(cloud){ stateDoc.set({progress, cfg, seenCounter}).catch(e=>console.warn(e)); return; }
+  save(LS_KEY,words);save(LS_STATE,progress);save(LS_CFG,cfg);save('yds_seen_count',{n:seenCounter});
+}
+function uid(){return Math.random().toString(36).slice(2,9)}
+
+async function initBackend(){
+  try{
+    const db = window.claude ? await claude.use('db') : null;
+    const user = window.claude ? await claude.use('user') : null;
+    const id = user ? await user.id() : null;
+    if(db && id){
+      cloud = true;
+      stateDoc = db.doc('data/users/'+id+'/state');
+      wordsCol = stateDoc.collection('words');
+      wordsCol.onSnapshot(snap=>{
+        words = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+        ready=true; render();
+      }, e=>console.warn(e));
+      stateDoc.onSnapshot(snap=>{
+        const d = snap.data()||{};
+        progress = d.progress||{}; cfg = d.cfg||cfg; seenCounter = d.seenCounter||0;
+        ready=true; render();
+      }, e=>console.warn(e));
+      return;
+    }
+  }catch(e){ console.warn(e); }
+  words = load(LS_KEY, []); progress = load(LS_STATE, {});
+  cfg = load(LS_CFG, {newPerSession:10}); seenCounter = load('yds_seen_count', {n:0}).n;
+  ready=true; render();
+}
+function norm(s){return (s||'').toLocaleLowerCase('tr-TR').replace(/[^a-zçğıöşü0-9 ]/g,'').replace(/\s+/g,' ').trim()}
+function splitAns(s){return (s||'').split(/[\/,;]/).map(norm).filter(Boolean)}
+function isCorrect(userInput, trField){
+  const u = norm(userInput);
+  if(!u) return false;
+  const accepted = splitAns(trField);
+  return accepted.some(a => a===u || a.includes(u) || u.includes(a));
+}
+
+function ensureProgress(w){
+  if(!progress[w.id]) progress[w.id] = {status:'new', wrongStreak:0, stage:0, dueSeen:null, dueTime:null};
+  return progress[w.id];
+}
+
+function buildQueue(){
+  const now = Date.now();
+  // due repeats (time-based, from wrong-answer cycle) and seen-count based (mastered/correct-once) that are due
+  const due = words.filter(w=>{
+    const p = ensureProgress(w);
+    if(p.status==='learning' && p.dueTime!=null) return now>=p.dueTime;
+    if(p.status==='review' && p.dueSeen!=null) return seenCounter>=p.dueSeen;
+    return false;
+  });
+  const newOnes = words.filter(w=>ensureProgress(w).status==='new')
+    .sort((a,b)=>a.difficulty-b.difficulty)
+    .slice(0,cfg.newPerSession);
+  // weight new word order by adaptive difficulty mix, but keep simple: easy first unless user has mastered many
+  const masteredCount = words.filter(w=>progress[w.id]&&progress[w.id].status==='review').length;
+  let order = ['1','2','3'];
+  if(masteredCount>=25) order=['2','3','1']; else if(masteredCount>=10) order=['2','1','3'];
+  const byLvl = d=>newOnes.filter(w=>String(w.difficulty)===d);
+  const mixedNew = order.flatMap(byLvl);
+  return [...due, ...mixedNew];
+}
+
+function startSession(){
+  const q = buildQueue();
+  session = {queue:q, idx:0, phase:'ask', input:'', retryWord:null};
+  render();
+}
+
+function currentWord(){
+  if(!session) return null;
+  if(session.retryWord) return session.retryWord;
+  return session.queue[session.idx] || null;
+}
+
+function submitAnswer(val){
+  const w = currentWord(); if(!w) return;
+  const ok = isCorrect(val, w.tr);
+  const p = ensureProgress(w);
+  session.lastUserAnswer = val;
+  session.lastOk = ok;
+  if(ok){
+    if(p.status==='learning'){
+      p.stage++;
+      const stages=[10*60*1000,60*60*1000,null]; // 10min,1hr, then end-of-day handled as 'review'
+      if(p.stage<=2){ p.dueTime = Date.now()+stages[p.stage-1]; }
+      else { p.status='review'; p.dueTime=null; p.dueSeen=seenCounter+40; }
+    } else {
+      p.status='review'; p.dueSeen = seenCounter+40; p.wrongStreak=0;
+    }
+    session.retryWord=null;
+  } else {
+    p.status='learning'; p.stage=1; p.dueTime=Date.now(); p.wrongStreak=(p.wrongStreak||0)+1;
+    session.retryWord=w;
+  }
+  seenCounter++;
+  session.phase='result';
+  saveAll();
+  render();
+}
+
+function retryCard(){ session.phase='ask'; render(); }
+
+function nextCard(){
+  if(!session.retryWord) session.idx++;
+  session.phase='ask';
+  session.input='';
+  if(!currentWord()){
+    const q = buildQueue();
+    if(q.length){ session.queue=q; session.idx=0; } else { session=null; }
+  }
+  render();
+}
+
+function addWord(f){
+  const data = {en:f.en.trim(), tr:f.tr.trim(), syn:f.syn.trim(), ant:f.ant.trim(),
+    example:f.example.trim(), type:f.type, importance:f.importance, difficulty:f.difficulty};
+  if(cloud){ wordsCol.add(data).catch(e=>console.warn(e)); return; }
+  words.push(Object.assign({id:uid()}, data));
+  saveAll(); render();
+}
+
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+
+function render(){
+  const app = document.getElementById('app');
+  if(!ready){ app.innerHTML = '<p class="empty ui">Yükleniyor…</p>'; return; }
+  const newCount = words.filter(w=>ensureProgress(w).status==='new').length;
+  const learningCount = words.filter(w=>progress[w.id]&&progress[w.id].status==='learning').length;
+  const masteredCount = words.filter(w=>progress[w.id]&&progress[w.id].status==='review').length;
+
+  let body='';
+  if(tab==='study') body = renderStudy();
+  else if(tab==='add') body = renderAdd();
+  else body = renderList();
+
+  app.innerHTML = `
+    <h1 class="ui">YDS Kelime Antrenörü</h1>
+    <p class="sub ui">Kendi kelimeni ekle, aktif hatırlama ile kalıcı öğren. ${cloud?'· Hesabınla senkronize ediliyor':'· Bu cihazda saklanıyor (senkron yok)'}</p>
+    <div class="stats ui">
+      <div class="stat"><b>${words.length}</b><span>toplam kelime</span></div>
+      <div class="stat"><b>${newCount}</b><span>yeni</span></div>
+      <div class="stat"><b>${learningCount}</b><span>tekrarda</span></div>
+      <div class="stat"><b>${masteredCount}</b><span>öğrenildi</span></div>
+    </div>
+    <nav class="ui">
+      <button class="${tab==='study'?'active':''}" onclick="tab='study';session=null;render()">Çalış</button>
+      <button class="${tab==='add'?'active':''}" onclick="tab='add';render()">Kelime Ekle</button>
+      <button class="${tab==='list'?'active':''}" onclick="tab='list';render()">Kelimelerim</button>
+    </nav>
+    ${body}
+  `;
+  const ansInput = document.getElementById('ansInput');
+  if(ansInput){ ansInput.focus(); ansInput.onkeydown = e=>{ if(e.key==='Enter'){ e.preventDefault(); submitAnswer(ansInput.value); } }; }
+}
+
+function renderStudy(){
+  if(words.length===0){
+    return `<div class="card"><p class="empty">Henüz kelime yok. "Kelime Ekle" sekmesinden birkaç kelime ekleyip başla.</p></div>`;
+  }
+  if(!session){
+    const dueNow = words.filter(w=>{const p=ensureProgress(w); return (p.status==='learning'&&p.dueTime!=null&&Date.now()>=p.dueTime)||(p.status==='review'&&p.dueSeen!=null&&seenCounter>=p.dueSeen)}).length;
+    return `<div class="card">
+      <label class="ui">Yeni kelime / oturum</label>
+      <select id="npsSel" onchange="cfg.newPerSession=parseInt(this.value);saveAll()">
+        ${[10,20,30,40].map(n=>`<option value="${n}" ${cfg.newPerSession===n?'selected':''}>${n}</option>`).join('')}
+      </select>
+      <p class="ui" style="color:var(--sub);font-size:13px;margin-top:12px">Şu an tekrar bekleyen: ${dueNow} kelime.</p>
+      <button class="primary" onclick="startSession()">Oturumu Başlat</button>
+    </div>`;
+  }
+  const w = currentWord();
+  if(!w) return `<div class="card"><p class="empty">Bu oturumda gösterilecek kelime kalmadı. Yeni bir oturum başlatabilirsin.</p><button class="ghost" onclick="session=null;render()">Geri dön</button></div>`;
+
+  if(session.phase==='ask'){
+    return `<div class="card">
+      <div class="word-stage">
+        <div class="en">${esc(w.en)}</div>
+        <div class="meta ui">${esc(w.type||'')}${session.retryWord?' · tekrar deniyorsun':''}</div>
+        <label class="ui" style="text-align:center">Türkçe anlamını yazınız</label>
+        <div class="ans-row">
+          <input id="ansInput" autocomplete="off" placeholder="cevabın">
+          <button class="primary" style="margin-top:0" onclick="submitAnswer(document.getElementById('ansInput').value)">Kontrol Et</button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const ok = session.lastOk;
+  return `<div class="card">
+    <div class="result">
+      <div class="verdict ${ok?'ok':'no'} ui">${ok?'✓ Doğru':'✗ Yanlış'}</div>
+      ${ok?'':`<div class="correct-ans ui">Doğru cevap: <b>${esc(splitAns(w.tr)[0]||w.tr)}</b></div>`}
+      <div class="info">
+        <h3>${esc(w.en)}</h3>
+        <div class="tr ui">${esc(w.tr)}</div>
+        ${w.syn?`<div class="rowlbl">Synonyms</div><div>${esc(w.syn)}</div>`:''}
+        ${w.ant?`<div class="rowlbl">Antonyms</div><div>${esc(w.ant)}</div>`:''}
+        ${w.example?`<div class="rowlbl">Example</div><div class="example">${esc(w.example)}</div>`:''}
+      </div>
+      <button class="primary" onclick="${ok?'nextCard()':'retryCard()'}">${ok?'Bir sonraki kelimeye geç':'Tekrar dene'}</button>
+    </div>
+  </div>`;
+}
+
+function renderAdd(){
+  return `<div class="card">
+    <form id="wf" onsubmit="event.preventDefault();
+      addWord({en:this.en.value,tr:this.tr.value,syn:this.syn.value,ant:this.ant.value,example:this.example.value,type:this.type.value,importance:this.importance.value,difficulty:this.difficulty.value});
+      this.reset();">
+      <label class="ui">İngilizce kelime</label>
+      <input name="en" required>
+      <label class="ui">Türkçe anlamı (birden fazlaysa / ile ayır)</label>
+      <input name="tr" required placeholder="terk etmek / bırakmak / vazgeçmek">
+      <div class="grid2">
+        <div><label class="ui">Kelime türü</label>
+          <select name="type"><option>noun</option><option>verb</option><option>adjective</option><option>adverb</option></select>
+        </div>
+        <div><label class="ui">Zorluk seviyesi</label>
+          <select name="difficulty"><option value="1">Level 1 – Easy</option><option value="2">Level 2 – Medium</option><option value="3">Level 3 – Hard</option></select>
+        </div>
+      </div>
+      <label class="ui">İngilizce eş anlamlıları</label>
+      <input name="syn" placeholder="leave, desert, forsake">
+      <label class="ui">İngilizce zıt anlamlıları</label>
+      <input name="ant" placeholder="retain, keep, maintain">
+      <label class="ui">Örnek cümle</label>
+      <textarea name="example"></textarea>
+      <label class="ui">YDS önem seviyesi</label>
+      <select name="importance"><option>Yüksek</option><option>Orta</option><option>Düşük</option></select>
+      <button class="primary" type="submit">Kelimeyi Ekle</button>
+    </form>
+  </div>`;
+}
+
+function renderList(){
+  if(words.length===0) return `<div class="card"><p class="empty">Henüz kelime eklenmedi.</p></div>`;
+  const rows = words.map(w=>{
+    const p = ensureProgress(w);
+    const lbl = p.status==='new'?'yeni':p.status==='learning'?'tekrarda':'öğrenildi';
+    return `<tr><td>${esc(w.en)}</td><td>${esc(w.tr)}</td><td>${['','Easy','Medium','Hard'][w.difficulty]}</td><td>${lbl}</td></tr>`;
+  }).join('');
+  return `<div class="card"><table class="ui"><tr><th>Kelime</th><th>Anlam</th><th>Zorluk</th><th>Durum</th></tr>${rows}</table></div>`;
+}
+
+initBackend();
+if('serviceWorker' in navigator){ navigator.serviceWorker.register('sw.js').catch(()=>{}); }
+</script>
+</body>
+</html>
